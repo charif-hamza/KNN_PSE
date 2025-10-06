@@ -1,0 +1,26 @@
+{
+  "dataset": "CSTH (Continuous Stirred Tank Heater)",
+  "task": "Fault Detection and Diagnosis",
+  "config": {
+    "k": 25,
+    "distance_metric": "euclidean",
+    "use_pca": true,
+    "pca_variance_threshold": 0.95
+  },
+  "results": {
+    "accuracy": 0.8361111111111111,
+    "f1_weighted": 0.8344925287243431,
+    "f1_macro": 0.8344370344710825,
+    "detection_rate": 0.9335548172757475,
+    "false_alarm_rate": 0.26198439241917504,
+    "time": 0.7016489505767822
+  },
+  "confusion_matrix": {
+    "true_negative": 662,
+    "false_positive": 235,
+    "false_negative": 60,
+    "true_positive": 843
+  },
+  "n_train": 7200,
+  "n_test": 1800
+}
