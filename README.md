@@ -119,29 +119,49 @@ python src/run_csth.py --mode final --best-k 25
 python src/run_csth.py --mode all
 ```
 
+### Command-Line Options
+
+```bash
+python src/run_csth.py --help
+
+Options:
+  --data-dir PATH       Directory containing train.pt, val.pt, test.pt
+                        (default: data/raw)
+  --output-dir PATH     Output directory for results (default: results)
+  --mode {quick,search,final,ablation,all}
+                        Execution mode (default: quick)
+  --best-k INT          Best k value for final evaluation (default: 10)
+```
+
 ### Example Output
 
 ```
 FINAL TEST RESULTS - Fault Detection Performance
 ======================================================================
-Accuracy:      0.9856
-F1 (weighted): 0.9856
-F1 (macro):    0.9856
-Time:          12.34s
+Accuracy:      0.8361
+F1 (weighted): 0.8345
+F1 (macro):    0.8344
+Time:          0.70s
 
 Classification Report (0=normal, 1=fault):
               precision    recall  f1-score   support
 
-      normal      0.988     0.983     0.985       900
-       fault      0.983     0.988     0.986       900
+      normal      0.917     0.738     0.818       897
+       fault      0.782     0.934     0.851       903
 
-    accuracy                          0.986      1800
-   macro avg      0.986     0.986     0.986      1800
-weighted avg      0.986     0.986     0.986      1800
+    accuracy                          0.836      1800
+   macro avg      0.849     0.836     0.834      1800
+weighted avg      0.849     0.836     0.834      1800
+
+Confusion Matrix:
+                Predicted
+              Normal  Fault
+Actual Normal    662    235
+       Fault      60    843
 
 Fault Detection Metrics:
-  Detection Rate (Recall):    0.9878
-  False Alarm Rate:           0.0167
+  Detection Rate (Recall):    0.9336
+  False Alarm Rate:           0.2620
 ```
 
 ## Results
@@ -149,7 +169,7 @@ Fault Detection Metrics:
 Results are saved to `results/` directory:
 
 - `hyperparam_search_k.csv`: Grid search results for different k values
-- `test_predictions_k{k}.csv`: Detailed predictions on test set
+- `test_predictions_k{k}.csv`: Detailed predictions on test set with probabilities
 - `test_results_k{k}.json`: Summary metrics and configuration
 - `ablation_study.csv`: Preprocessing comparison results
 
@@ -159,11 +179,17 @@ Results are saved to `results/` directory:
 .
 ├── data/raw/              # Dataset files (train.pt, val.pt, test.pt)
 ├── src/
+│   ├── __init__.py
 │   ├── knn_pipeline.py    # Core KNN pipeline implementation
 │   └── run_csth.py        # CSTH-specific runner and experiments
 ├── results/               # Experiment outputs
+│   ├── hyperparam_search_k.csv
+│   ├── test_predictions_k25.csv
+│   └── test_results_k25.json
 ├── presentation_gen/      # Presentation generation utilities
 ├── devenv.nix            # Development environment configuration
+├── devenv.lock
+├── devenv.yaml
 └── README.md
 ```
 
@@ -172,10 +198,11 @@ Results are saved to `results/` directory:
 ### PipelineConfig
 
 Configurable hyperparameters:
-- Cross-validation: `n_splits`, group handling
-- Preprocessing: `standardize`, `use_pca`, `pca_variance_threshold`
-- KNN: `k`, `distance_metric`, `distance_weighting`
-- DTW: `dtw_window`, `dtw_batch_size`
+- **Cross-validation**: `n_splits`, group handling
+- **Preprocessing**: `standardize`, `use_pca`, `pca_variance_threshold`, `n_components`
+- **KNN**: `k`, `distance_metric`, `distance_weighting`
+- **DTW**: `dtw_window`, `dtw_batch_size`
+- **Computation**: `n_jobs`, `verbose`
 
 ### TimeSeriesPreprocessor
 
@@ -183,20 +210,33 @@ Handles preprocessing pipeline:
 - Feature standardization across all samples
 - Per-timestep PCA compression
 - Automatic variance-based component selection
+- Consistent output shape handling
 
 ### Distance Computation
 
 - **Euclidean**: Fast vectorized computation on flattened sequences
-- **DTW**: Custom implementation with Sakoe-Chiba band for efficiency
+- **DTW**: Custom implementation with Sakoe-Chiba band for computational efficiency
 
 ## Performance
 
-Typical performance on CSTH dataset:
-- **Accuracy**: ~98.5%
-- **F1 Score**: ~98.5%
-- **Detection Rate**: ~98.8%
-- **False Alarm Rate**: ~1.7%
-- **Training Time**: ~10-15s (full train+val on test)
+Achieved performance on CSTH dataset (k=25, Euclidean distance):
+
+| Metric | Value |
+|--------|-------|
+| Accuracy | 83.61% |
+| F1 Score (weighted) | 83.45% |
+| F1 Score (macro) | 83.44% |
+| Detection Rate | 93.36% |
+| False Alarm Rate | 26.20% |
+| Inference Time | 0.70s |
+
+**Confusion Matrix** (n=1,800):
+- True Negatives: 662
+- False Positives: 235
+- False Negatives: 60
+- True Positives: 843
+
+The model achieves high detection rate (93.4%) for faults but has moderate false alarm rate (26.2%), indicating a bias toward detecting faults to minimize missed detections—a reasonable trade-off for safety-critical applications.
 
 ## Citation
 
@@ -214,21 +254,87 @@ If you use this code or the CSTH dataset, please cite:
 
 ## License
 
-- **Code**: MIT License (see repository)
+- **Code**: Available for research and educational purposes
 - **Dataset**: CC BY-NC 4.0 (non-commercial use only)
 
 ## Requirements
 
-- Python 3.12 (3.13 not recommended due to library compatibility)
-- PyTorch (CPU version)
+- Python 3.12 (avoid 3.13 due to library compatibility)
+- PyTorch (CPU version sufficient)
 - NumPy, SciPy, scikit-learn
 - Pandas, Matplotlib, Seaborn
-- See `devenv.nix` for complete dependency list
+- See `devenv.nix` for complete dependency specification
+
+### System Dependencies
+
+The devenv configuration includes:
+- Git
+- zlib (libz.so.1)
+- Standard C++ library (libstdc++.so.6, libgcc_s.so.1)
+- GNU Fortran library (for numpy/scipy)
+
+## Development
+
+### Testing
+
+Run the built-in tests on synthetic data:
+
+```bash
+python src/knn_pipeline.py
+```
+
+This will execute:
+1. Euclidean KNN with grid search
+2. DTW KNN with single k value
+3. Ablation study on preprocessing options
+
+### Customization
+
+To use the pipeline on your own time series data:
+
+```python
+from knn_pipeline import evaluate_knn, PipelineConfig
+
+# Your data: (n_samples, n_timesteps, n_features)
+X_seq = ...  # Shape: (N, T, F)
+y = ...      # Shape: (N,)
+groups = ... # Shape: (N,) - for GroupKFold CV
+
+config = PipelineConfig(
+    k=10,
+    distance_metric='euclidean',
+    use_pca=True,
+    standardize=True,
+)
+
+result = evaluate_knn(X_seq, y, groups, config)
+print(result)
+```
+
+## Troubleshooting
+
+**Issue**: `FileNotFoundError: Data file not found`
+- Ensure dataset files are in `data/raw/` directory
+- Check file names match exactly: `train.pt`, `val.pt`, `test.pt`
+
+**Issue**: Memory errors with DTW
+- Reduce `dtw_batch_size` in PipelineConfig
+- Use Euclidean distance instead for faster computation
+
+**Issue**: Poor performance
+- Try different k values with `--mode search`
+- Check class balance in your splits
+- Verify data normalization
 
 ## Contributing
 
-This is a research prototype. For questions or issues, please refer to the original paper or create an issue in the repository.
+This is a research implementation. For questions or suggestions:
+1. Check the original paper for methodology details
+2. Review the code documentation in `src/knn_pipeline.py`
+3. Open an issue with reproducible examples
 
 ## Acknowledgments
 
-Dataset provided by Ibrahim Yousef, Sirish L. Shah, and R. Bhushan Gopaluni from the University of British Columbia. The CSTH simulation model is available at [Zenodo](https://zenodo.org/records/10093059).
+- **Dataset**: Ibrahim Yousef, Sirish L. Shah, and R. Bhushan Gopaluni (University of British Columbia)
+- **CSTH Model**: Available at [Zenodo](https://zenodo.org/records/10093059)
+- **Development Environment**: Built with [devenv](https://devenv.sh/)
