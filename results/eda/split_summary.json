@@ -1,0 +1,20 @@
+{
+  "train": {
+    "samples": 6300,
+    "time_steps": 3,
+    "features": 200,
+    "positive_fraction": 0.49984127283096313
+  },
+  "val": {
+    "samples": 900,
+    "time_steps": 3,
+    "features": 200,
+    "positive_fraction": 0.4977777898311615
+  },
+  "test": {
+    "samples": 1800,
+    "time_steps": 3,
+    "features": 200,
+    "positive_fraction": 0.5016666650772095
+  }
+}
