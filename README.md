@@ -1,139 +1,96 @@
 # KNN Pipeline for CSTH Fault Detection
 
-A production-quality K-Nearest Neighbors (KNN) pipeline for time series classification applied to the CSTH (Continuous Stirred Tank Heater) benchmark dataset for fault detection and diagnosis.
+This repository contains a production-ready K-Nearest Neighbors (KNN) pipeline for detecting instrumentation faults in the Continuous Stirred Tank Heater (CSTH) benchmark. The codebase focuses on reproducible experimentation, rich diagnostics, and automation around the end-to-end workflow—from dataset validation through model evaluation and report generation.
 
-## Overview
+## Repository Tour
 
-This repository implements a comprehensive KNN-based approach for detecting faults in a simulated heating system. The pipeline includes advanced preprocessing, multiple distance metrics (Euclidean and DTW), and extensive evaluation capabilities.
+- `src/knn_pipeline.py` – Core time-series KNN implementation with preprocessing, distance computation, evaluation utilities, and helper functions for ablations/grid search.
+- `src/run_csth.py` – Command line entry point that wires the pipeline to the CSTH dataset, handling data loading, experiment orchestration, and persistence of metrics/predictions.
+- `notebooks/` – Exploratory material such as the distance metric comparison and a step-by-step tutorial.
+- `results/` – Example experiment artifacts (CSV/JSON) produced by the CLI workflows.
+- `presentation_gen/` – Script and generated slide deck summarizing the approach and findings.
+- `data/` – Expected location for the CSTH dataset splits (`data/raw/train.pt`, etc.).
 
-### Dataset: CSTH Simulated Benchmark
+## Pipeline Highlights (`src/knn_pipeline.py`)
+
+The pipeline is designed for multivariate time-series classification and exposes composable building blocks:
+
+- **Preprocessing**
+  - Optional global standardisation via `StandardScaler` applied consistently across time steps.
+  - PCA-based time compression (`PCATimeCompressor`) that fits an independent PCA per time step while enforcing a common latent dimensionality. Variance retention targets or explicit component counts are configurable.
+- **Distance Computation**
+  - Vectorised Euclidean distances on flattened sequences for fast baselines.
+  - Dynamic Time Warping (DTW) with an optional Sakoe–Chiba band; batching controls keep memory usage manageable during large evaluations.
+- **Classification**
+  - Weighted/unweighted voting based on precomputed distance matrices, supporting inverse-distance weighting for smoother decision boundaries.
+- **Evaluation & Reporting**
+  - Group-aware cross-validation (`GroupKFold`) with per-fold metrics, timing, and graceful handling of degenerate folds.
+  - Rich summary objects (`EvalResult`) containing confusion matrices, scikit-learn classification reports, timing breakdowns, and metadata about the configuration.
+  - Grid-search utilities (`grid_search_k`) for tuning `k` that reuse the evaluation pipeline.
+- **Utilities & Demos**
+  - Sliding-window generator (`make_windows`) for converting raw telemetry into model-ready tensors.
+  - Synthetic data demo to sanity-check the pipeline without the CSTH dataset.
+
+## CLI Workflows (`src/run_csth.py`)
+
+The CLI wraps the core pipeline with CSTH-specific tooling:
+
+- Robust dataset loading with schema validation, class balance reporting, and sanity checks for ranges/timesteps/features.
+- Automatic group creation for cross-validation when explicit run identifiers are absent.
+- Experiment modes:
+  - `quick` – Fast diagnostic cross-validation on the validation split.
+  - `search` – Grid search across `k` values with results written to `results/hyperparam_search_k.csv`.
+  - `ablation` – Comparison of preprocessing configurations (scaling/PCA combinations) to quantify their impact.
+  - `final` – Trains on train+val, evaluates on test, and persists predictions/metrics (see `results/test_predictions_k25.csv` and `results/test_results_k25.json` for examples).
+  - `all` – Runs the quick check, hyperparameter search, and final evaluation sequentially.
+- Outputs include JSON/CSV summaries plus pretty-printed confusion matrices and classification reports for quick inspection.
+
+Invoke the CLI with:
+
+```bash
+python src/run_csth.py --mode quick
+```
+
+Run `python src/run_csth.py --help` for the full list of options, including `--data-dir`, `--output-dir`, and `--best-k`.
+
+## Dataset: CSTH Simulated Benchmark
 
 - **Source**: [Zenodo Dataset (DOI: 10.5281/zenodo.10093059)](https://zenodo.org/records/10093059)
-- **Task**: Binary time series classification for fault detection
-- **Domain**: Process control simulation (continuous stirred tank heater)
-- **Size**: 9,000 multivariate time series samples
-  - Training: 6,300 samples (70%)
-  - Validation: 900 samples (10%)
-  - Test: 1,800 samples (20%)
-- **Structure**: Each sample has shape `(T=200, F=3)`
-  - 200 time steps
-  - 3 process variables: cold water flow, tank level, temperature
-- **Labels**:
-  - `Y=0`: Normal operating conditions (50%)
-  - `Y=1`: Faulty scenarios - instrumentation errors (50%)
-- **Preprocessing**: Data normalized to [0, 1]
+- **Task**: Binary time-series classification (normal vs. fault)
+- **Samples**: 9,000 sequences split into train (6,300), validation (900), and test (1,800)
+- **Shape**: `(N, T=200, F=3)` with 200 time steps and three process variables (cold water flow, tank level, temperature)
+- **Labels**: `0` for normal operation, `1` for instrumentation fault conditions (balanced dataset)
+- **Normalization**: Values scaled to `[0, 1]`
 
-## Features
+Place the splits under `data/raw/` to align with the CLI defaults:
 
-### Core Pipeline (`src/knn_pipeline.py`)
-
-- **Preprocessing**:
-  - StandardScaler for feature normalization
-  - PCA-based time compression (independent PCA per timestep)
-  - Configurable variance retention thresholds
-  
-- **Distance Metrics**:
-  - Euclidean distance (vectorized, fast)
-  - Dynamic Time Warping (DTW) with Sakoe-Chiba band constraint
-  - Memory-efficient batch processing for large datasets
-
-- **Classification**:
-  - Weighted and unweighted KNN voting
-  - Distance-based weighting (inverse distance)
-  - Comprehensive cross-validation with GroupKFold
-
-- **Evaluation**:
-  - Accuracy, F1 (weighted & macro), precision, recall
-  - Per-fold metrics for debugging
-  - Confusion matrices and classification reports
-  - Timing statistics
-
-### CSTH Runner (`src/run_csth.py`)
-
-Domain-specific runner for fault detection experiments:
-
-- **Quick Test**: Fast validation on subset with cross-validation
-- **Hyperparameter Search**: Grid search over k values (1-30)
-- **Ablation Study**: Compare preprocessing configurations
-- **Final Evaluation**: Train on combined train+val, test on holdout set
-
-## Installation
-
-### Using devenv (Recommended)
-
-This project uses [devenv](https://devenv.sh/) for reproducible development environments:
-
-```bash
-# Install devenv (if not already installed)
-# See: https://devenv.sh/getting-started/
-
-# Enter the development environment
-devenv shell
-
-# All dependencies will be automatically installed
+```
+data/raw/
+├── train.pt
+├── val.pt
+└── test.pt
 ```
 
-### Manual Installation
-
-Alternatively, install dependencies manually:
+## Running Experiments
 
 ```bash
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install torch numpy scipy pandas scikit-learn matplotlib \
-            pyarrow python-pptx beautifulsoup4 lxml seaborn tqdm
-```
-
-## Usage
-
-### Data Setup
-
-1. Download the CSTH dataset from [Zenodo](https://zenodo.org/records/10093059)
-2. Place the files in `data/raw/`:
-   ```
-   data/raw/
-   ├── train.pt
-   ├── val.pt
-   └── test.pt
-   ```
-
-### Running Experiments
-
-```bash
-# Quick validation test (5-fold CV on validation set)
+# Quick validation experiment (5-fold GroupKFold over validation data)
 python src/run_csth.py --mode quick
 
-# Hyperparameter search (grid search over k values)
-python src/run_csth.py --mode search
+# Hyperparameter sweep over candidate k values
+python src/run_csth.py --mode search --output-dir results
 
-# Ablation study (compare preprocessing configurations)
+# Evaluate preprocessing variants (scaling/PCA)
 python src/run_csth.py --mode ablation
 
-# Final test evaluation (requires best k from search)
+# Final model evaluation on the held-out test split
 python src/run_csth.py --mode final --best-k 25
 
-# Run all experiments sequentially
-python src/run_csth.py --mode all
+# Execute quick, search, and final back-to-back
+python src/run_csth.py --mode all --best-k 25
 ```
 
-### Command-Line Options
-
-```bash
-python src/run_csth.py --help
-
-Options:
-  --data-dir PATH       Directory containing train.pt, val.pt, test.pt
-                        (default: data/raw)
-  --output-dir PATH     Output directory for results (default: results)
-  --mode {quick,search,final,ablation,all}
-                        Execution mode (default: quick)
-  --best-k INT          Best k value for final evaluation (default: 10)
-```
-
-### Example Output
+Example output from a final test run (Euclidean distance, `k=25`):
 
 ```
 FINAL TEST RESULTS - Fault Detection Performance
@@ -158,183 +115,43 @@ Confusion Matrix:
               Normal  Fault
 Actual Normal    662    235
        Fault      60    843
-
-Fault Detection Metrics:
-  Detection Rate (Recall):    0.9336
-  False Alarm Rate:           0.2620
 ```
 
-## Results
+## Development Environment
 
-Results are saved to `results/` directory:
+### Using devenv (Recommended)
 
-- `hyperparam_search_k.csv`: Grid search results for different k values
-- `test_predictions_k{k}.csv`: Detailed predictions on test set with probabilities
-- `test_results_k{k}.json`: Summary metrics and configuration
-- `ablation_study.csv`: Preprocessing comparison results
+The project ships with a [devenv](https://devenv.sh/) configuration for reproducible local environments:
 
-## Project Structure
+```bash
+# Install devenv if needed (see https://devenv.sh/getting-started/)
 
-```
-.
-├── data/raw/              # Dataset files (train.pt, val.pt, test.pt)
-├── src/
-│   ├── __init__.py
-│   ├── knn_pipeline.py    # Core KNN pipeline implementation
-│   └── run_csth.py        # CSTH-specific runner and experiments
-├── results/               # Experiment outputs
-│   ├── hyperparam_search_k.csv
-│   ├── test_predictions_k25.csv
-│   └── test_results_k25.json
-├── presentation_gen/      # Presentation generation utilities
-├── devenv.nix            # Development environment configuration
-├── devenv.lock
-├── devenv.yaml
-└── README.md
+# Enter the prepared shell with all dependencies
+devenv shell
 ```
 
-## Key Components
+### Manual Setup
 
-### PipelineConfig
+If you prefer a lightweight virtual environment:
 
-Configurable hyperparameters:
-- **Cross-validation**: `n_splits`, group handling
-- **Preprocessing**: `standardize`, `use_pca`, `pca_variance_threshold`, `n_components`
-- **KNN**: `k`, `distance_metric`, `distance_weighting`
-- **DTW**: `dtw_window`, `dtw_batch_size`
-- **Computation**: `n_jobs`, `verbose`
+```bash
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
-### TimeSeriesPreprocessor
-
-Handles preprocessing pipeline:
-- Feature standardization across all samples
-- Per-timestep PCA compression
-- Automatic variance-based component selection
-- Consistent output shape handling
-
-### Distance Computation
-
-- **Euclidean**: Fast vectorized computation on flattened sequences
-- **DTW**: Custom implementation with Sakoe-Chiba band for computational efficiency
-
-## Performance
-
-Achieved performance on CSTH dataset (k=25, Euclidean distance):
-
-| Metric | Value |
-|--------|-------|
-| Accuracy | 83.61% |
-| F1 Score (weighted) | 83.45% |
-| F1 Score (macro) | 83.44% |
-| Detection Rate | 93.36% |
-| False Alarm Rate | 26.20% |
-| Inference Time | 0.70s |
-
-**Confusion Matrix** (n=1,800):
-- True Negatives: 662
-- False Positives: 235
-- False Negatives: 60
-- True Positives: 843
-
-The model achieves high detection rate (93.4%) for faults but has moderate false alarm rate (26.2%), indicating a bias toward detecting faults to minimize missed detections—a reasonable trade-off for safety-critical applications.
-
-## Citation
-
-If you use this code or the CSTH dataset, please cite:
-
-```bibtex
-@article{yousef2025timeseries,
-  title={Time Series Representation Learning via Cross-Domain Predictive and Contextual Contrasting: Application to Fault Detection},
-  author={Yousef, Ibrahim and Shah, Sirish L. and Gopaluni, R. Bhushan},
-  journal={Engineering Applications of Artificial Intelligence},
-  year={2025},
-  note={Available at SSRN: https://ssrn.com/abstract=5085741}
-}
+pip install torch numpy scipy pandas scikit-learn matplotlib \
+            pyarrow python-pptx beautifulsoup4 lxml seaborn tqdm
 ```
-
-## License
-
-- **Code**: Available for research and educational purposes
-- **Dataset**: CC BY-NC 4.0 (non-commercial use only)
-
-## Requirements
-
-- Python 3.12 (avoid 3.13 due to library compatibility)
-- PyTorch (CPU version sufficient)
-- NumPy, SciPy, scikit-learn
-- Pandas, Matplotlib, Seaborn
-- See `devenv.nix` for complete dependency specification
-
-### System Dependencies
-
-The devenv configuration includes:
-- Git
-- zlib (libz.so.1)
-- Standard C++ library (libstdc++.so.6, libgcc_s.so.1)
-- GNU Fortran library (for numpy/scipy)
-
-## Development
 
 ### Testing
 
-Run the built-in tests on synthetic data:
+The repository includes a synthetic-data smoke test inside `src/knn_pipeline.py` (run the module directly) and the CLI commands above. Execute the full automated test suite with:
 
 ```bash
-python src/knn_pipeline.py
+pytest
 ```
 
-This will execute:
-1. Euclidean KNN with grid search
-2. DTW KNN with single k value
-3. Ablation study on preprocessing options
+## Additional Assets
 
-### Customization
-
-To use the pipeline on your own time series data:
-
-```python
-from knn_pipeline import evaluate_knn, PipelineConfig
-
-# Your data: (n_samples, n_timesteps, n_features)
-X_seq = ...  # Shape: (N, T, F)
-y = ...      # Shape: (N,)
-groups = ... # Shape: (N,) - for GroupKFold CV
-
-config = PipelineConfig(
-    k=10,
-    distance_metric='euclidean',
-    use_pca=True,
-    standardize=True,
-)
-
-result = evaluate_knn(X_seq, y, groups, config)
-print(result)
-```
-
-## Troubleshooting
-
-**Issue**: `FileNotFoundError: Data file not found`
-- Ensure dataset files are in `data/raw/` directory
-- Check file names match exactly: `train.pt`, `val.pt`, `test.pt`
-
-**Issue**: Memory errors with DTW
-- Reduce `dtw_batch_size` in PipelineConfig
-- Use Euclidean distance instead for faster computation
-
-**Issue**: Poor performance
-- Try different k values with `--mode search`
-- Check class balance in your splits
-- Verify data normalization
-
-## Contributing
-
-This is a research implementation. For questions or suggestions:
-1. Check the original paper for methodology details
-2. Review the code documentation in `src/knn_pipeline.py`
-3. Open an issue with reproducible examples
-
-## Acknowledgments
-
-- **Dataset**: Ibrahim Yousef, Sirish L. Shah, and R. Bhushan Gopaluni (University of British Columbia)
-- **CSTH Model**: Available at [Zenodo](https://zenodo.org/records/10093059)
-- **Development Environment**: Built with [devenv](https://devenv.sh/)
+- **Notebooks** – Explore the methodology interactively via `notebooks/distance_metrics_comparison.ipynb` and `notebooks/tutorial.ipynb`.
+- **Presentation Generator** – `presentation_gen/generate_presentation.py` builds a PowerPoint summary (`presentation_knn_csth_enhanced.pptx`).
+- **Saved Artifacts** – CLI runs emit metrics/predictions into the `results/` directory; these files double as templates for integrating the pipeline into downstream reporting systems.
