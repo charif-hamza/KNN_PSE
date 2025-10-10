@@ -1,7 +1,6 @@
 """
 Production-quality KNN pipeline for time series classification.
 
-Key improvements:
 - Proper preprocessing pipeline with scaling
 - Comprehensive error handling and validation
 - Configurable hyperparameters with sensible defaults
