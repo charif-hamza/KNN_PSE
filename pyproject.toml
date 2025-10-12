@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=65.5", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "knn-pse"
+version = "0.1.0"
+description = "KNN baseline and tooling for the CSTH fault-detection benchmark"
+readme = "README.md"
+authors = [{name = "KNN CSTH Maintainers"}]
+requires-python = ">=3.10"
+dependencies = [
+    "numpy==1.26.4",
+    "pandas==2.1.4",
+    "scikit-learn==1.3.2",
+    "scipy==1.11.4",
+    "torch==2.1.2",
+    "matplotlib==3.8.2",
+    "pyarrow==14.0.2",
+    "python-pptx==0.6.23",
+    "beautifulsoup4==4.12.2",
+    "lxml==4.9.3",
+    "seaborn==0.13.1",
+    "tqdm==4.66.1",
+    "fastdtw==0.3.4",
+    "numba==0.58.1",
+]
+
+[project.optional-dependencies]
+ann = ["annoy==1.17.3", "faiss-cpu==1.7.4"]
+metrics = ["dtaidistance==2.3.10"]
+dev = [
+    "pytest==7.4.4",
+    "black==23.12.1",
+    "ruff==0.1.9",
+    "mypy==1.7.1",
+]
+
+[project.scripts]
+knn-csth = "knn_pse.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+py-modules = []
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.black]
+line-length = 88
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+per-file-ignores = {"tests/test_pipeline.py" = ["S101", "E402"]}
+
+[tool.mypy]
+python_version = "3.10"
+strict = false
+packages = ["knn_pse"]
+warn_return_any = true
+warn_unused_configs = true
