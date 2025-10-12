@@ -7,6 +7,7 @@ import hashlib
 import json
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +22,7 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 
-from .config import PipelineConfig
+from .config import DimensionalityReduction, PipelineConfig
 from .pipeline import (
     EvalResult,
     TimeSeriesPreprocessor,
@@ -213,6 +214,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         choices=["python", "numba", "fastdtw", "dtaidistance"],
         default="python",
     )
+    parser.add_argument(
+        "--extract-features",
+        choices=["none", "statistical", "temporal", "both"],
+        default="none",
+        help="Enable statistical and/or temporal feature extraction",
+    )
+    parser.add_argument(
+        "--dim-reduction",
+        choices=["pca", "nmf", "ica", "isomap", "factor"],
+        default="pca",
+        help="Choose the dimensionality reduction method",
+    )
     parser.add_argument("--threshold-grid", nargs="*", type=float, default=None)
     return parser
 
@@ -227,6 +240,8 @@ def configure_pipeline(args: argparse.Namespace) -> PipelineConfig:
         ann_backend=args.ann,
         dtw_backend=args.dtw_backend,
         threshold_grid=threshold_grid,
+        feature_extraction=args.extract_features,
+        dim_reduction_method=args.dim_reduction,
     )
 
 
@@ -262,9 +277,23 @@ def run_mode_search(args: argparse.Namespace) -> None:
     X_val, y_val = splits["val"]
     config = configure_pipeline(args)
     groups = create_groups_for_split(len(y_val))
-    results = grid_search_k(X_val, y_val, groups, [3, 5, 10, 15, 25], config)
-    for k, result in results.items():
-        print(f"k={k}: accuracy={result.accuracy:.3f} | F1w={result.f1_weighted:.3f}")
+    methods: tuple[DimensionalityReduction, ...] = (
+        "pca",
+        "nmf",
+        "ica",
+        "isomap",
+        "factor",
+    )
+    for method in methods:
+        method_config = replace(config, dim_reduction_method=method)
+        method_config.metadata = {**config.metadata, "dim_reduction": method}
+        print(f"\n=== Dimensionality reduction: {method} ===")
+        results = grid_search_k(X_val, y_val, groups, [3, 5, 10, 15, 25], method_config)
+        for k, result in results.items():
+            print(
+                f"k={k}: accuracy={result.accuracy:.3f} | "
+                f"F1w={result.f1_weighted:.3f}"
+            )
 
 
 def run_mode_final(args: argparse.Namespace) -> None:

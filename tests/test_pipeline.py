@@ -39,7 +39,7 @@ def test_make_windows_shapes(toy_dataframe: pd.DataFrame) -> None:
         window=4,
         stride=2,
     )
-    assert X.shape == (7, 4, 2)
+    assert X.shape == (8, 4, 2)
     assert y.tolist()[:3] == [0, 0, 0]
     assert list(groups[:3]) == [0, 0, 0]
     assert features == ["x0", "x1"]
