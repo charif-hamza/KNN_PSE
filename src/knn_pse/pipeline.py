@@ -10,11 +10,13 @@ import warnings
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
-from sklearn.decomposition import PCA
+from numpy.typing import NDArray
+from sklearn.decomposition import NMF, PCA, FactorAnalysis, FastICA
+from sklearn.manifold import Isomap
 from sklearn.metrics import (
     accuracy_score,
     average_precision_score,
@@ -27,32 +29,35 @@ from sklearn.model_selection import GroupKFold
 from sklearn.preprocessing import StandardScaler
 
 from .config import PipelineConfig
+from .features import StatisticalFeatureExtractor, TemporalFeatureExtractor
 from .metrics import ThresholdSweep
+
+FloatArray = NDArray[np.float_]
 
 try:  # Optional GPU acceleration
     import torch
 except Exception:  # pragma: no cover - torch may be unavailable
-    torch = None
+    torch = None  # type: ignore[assignment]
 
 try:  # Optional DTW accelerators
     from numba import njit
 except Exception:  # pragma: no cover - optional dependency
-    njit = None
+    njit = None  # type: ignore[assignment]
 
 try:  # Optional ANN search
     from annoy import AnnoyIndex
 except Exception:  # pragma: no cover - optional dependency
-    AnnoyIndex = None
+    AnnoyIndex = None  # type: ignore[assignment]
 
 try:  # pragma: no cover - optional dependency
     from fastdtw import fastdtw
 except Exception:  # pragma: no cover - optional dependency
-    fastdtw = None
+    fastdtw = None  # type: ignore[assignment]
 
 try:  # pragma: no cover - optional dependency
     from dtaidistance import dtw as dtaid_dtw
 except Exception:  # pragma: no cover - optional dependency
-    dtaid_dtw = None
+    dtaid_dtw = None  # type: ignore[assignment]
 
 
 # ============================================================================
@@ -98,8 +103,106 @@ class EvalResult:
 
 
 # ============================================================================
-# PCA Time Compressor
+# PCA Time Compressor and dimensionality reduction
 # ============================================================================
+
+
+class DimensionalityReducer:
+    """Factory-style wrapper around different dimensionality reducers."""
+
+    def __init__(
+        self,
+        method: str = "pca",
+        n_components: int | None = None,
+        variance_threshold: float = 0.95,
+        isomap_neighbors: int = 5,
+    ) -> None:
+        self.method = method
+        self.n_components = n_components
+        self.variance_threshold = variance_threshold
+        self.isomap_neighbors = isomap_neighbors
+        self.model: Any | None = None
+        self.output_dim_: int | None = None
+        self.offset_: np.ndarray | None = None
+
+    def fit(self, X: np.ndarray) -> DimensionalityReducer:
+        n_features = X.shape[1]
+        if self.method == "pca":
+            if self.n_components is None:
+                model = PCA(n_components=self.variance_threshold, svd_solver="full")
+            else:
+                n_comp = self._resolve_components(n_features)
+                model = PCA(n_components=n_comp)
+            model.fit(X)
+            self.model = model
+            self.output_dim_ = model.n_components_
+        elif self.method == "nmf":
+            n_comp = self._resolve_components(n_features)
+            model = NMF(
+                n_components=n_comp,
+                init="nndsvda",
+                random_state=0,
+                max_iter=500,
+            )
+            min_vals = np.min(X, axis=0)
+            self.offset_ = np.where(min_vals < 0, -min_vals, 0.0)
+            X_nonneg = np.clip(X + self.offset_, 1e-9, None)
+            model.fit(X_nonneg)
+            self.model = model
+            self.output_dim_ = n_comp
+        elif self.method == "ica":
+            n_comp = self._resolve_components(n_features)
+            model = FastICA(
+                n_components=n_comp,
+                random_state=0,
+                whiten="unit-variance",
+                max_iter=500,
+            )
+            model.fit(X)
+            self.model = model
+            self.output_dim_ = n_comp
+        elif self.method == "factor":
+            n_comp = self._resolve_components(n_features)
+            model = FactorAnalysis(n_components=n_comp, random_state=0)
+            model.fit(X)
+            self.model = model
+            self.output_dim_ = n_comp
+        elif self.method == "isomap":
+            n_comp = self._resolve_components(n_features)
+            model = Isomap(n_neighbors=self.isomap_neighbors, n_components=n_comp)
+            model.fit(X)
+            self.model = model
+            self.output_dim_ = n_comp
+        else:  # pragma: no cover - validated upstream
+            msg = f"Unsupported dimensionality reduction method: {self.method}"
+            raise ValueError(msg)
+        return self
+
+    def transform(self, X: np.ndarray) -> np.ndarray:
+        if self.model is None or self.output_dim_ is None:
+            msg = "DimensionalityReducer must be fitted before calling transform"
+            raise RuntimeError(msg)
+        if self.method == "pca":
+            transformed = self.model.transform(X)
+        elif self.method == "nmf":
+            assert self.offset_ is not None
+            transformed = self.model.transform(np.clip(X + self.offset_, 1e-9, None))
+        elif self.method in {"ica", "factor"}:
+            transformed = self.model.transform(X)
+        elif self.method == "isomap":
+            transformed = self.model.transform(X)
+        else:  # pragma: no cover - guarded in fit
+            msg = f"Unsupported dimensionality reduction method: {self.method}"
+            raise ValueError(msg)
+        return np.asarray(transformed, dtype=float)
+
+    def fit_transform(self, X: np.ndarray) -> np.ndarray:
+        return self.fit(X).transform(X)
+
+    def _resolve_components(self, n_features: int) -> int:
+        if self.n_components is not None:
+            return max(1, min(n_features, self.n_components))
+        return max(1, min(n_features, max(1, n_features // 2)))
 
 
 class PCATimeCompressor:
@@ -109,10 +212,14 @@ class PCATimeCompressor:
         self,
         n_components: int | None = None,
         variance_threshold: float = 0.95,
+        method: str = "pca",
+        isomap_neighbors: int = 5,
     ) -> None:
         self.n_components = n_components
         self.variance_threshold = variance_threshold
-        self.pcas: list[PCA] = []
+        self.method = method
+        self.isomap_neighbors = isomap_neighbors
+        self.reducers: list[DimensionalityReducer] = []
         self.explained_variance_ratio_: np.ndarray | None = None
         self.n_components_per_timestep_: list[int] | None = None
         self.min_components_: int | None = None
@@ -121,35 +228,46 @@ class PCATimeCompressor:
         """Fit PCA transformers for each time step."""
 
         n_samples, n_timesteps, n_features = X.shape
-        self.pcas = []
+        self.reducers = []
         variance_ratios = []
         components = []
 
         for idx in range(n_timesteps):
             X_t = X[:, idx, :]
-            if self.n_components is None:
-                pca = PCA(n_components=self.variance_threshold, svd_solver="full")
+            reducer = DimensionalityReducer(
+                method=self.method,
+                n_components=self.n_components,
+                variance_threshold=self.variance_threshold,
+                isomap_neighbors=self.isomap_neighbors,
+            )
+            reducer.fit(X_t)
+            self.reducers.append(reducer)
+            if reducer.output_dim_ is None:
+                msg = "Dimensionality reducer did not set output_dim_"
+                raise RuntimeError(msg)
+            components.append(int(reducer.output_dim_))
+            if self.method == "pca":
+                assert isinstance(reducer.model, PCA)
+                variance_ratios.append(float(np.sum(reducer.model.explained_variance_ratio_)))
             else:
-                pca = PCA(n_components=min(self.n_components, n_features))
-            pca.fit(X_t)
-            self.pcas.append(pca)
-            variance_ratios.append(float(np.sum(pca.explained_variance_ratio_)))
-            components.append(pca.n_components_)
+                variance_ratios.append(np.nan)
 
         self.explained_variance_ratio_ = np.asarray(variance_ratios)
         self.n_components_per_timestep_ = components
+        if not components:
+            raise RuntimeError("No components were computed during fit")
         self.min_components_ = int(min(components))
         return self
 
     def transform(self, X: np.ndarray) -> np.ndarray:
         """Transform samples using the fitted PCA models."""
 
-        if self.min_components_ is None:
+        if self.min_components_ is None or not self.reducers:
             raise RuntimeError("PCATimeCompressor must be fitted before use")
 
         transformed = []
-        for idx, pca in enumerate(self.pcas):
-            X_t = pca.transform(X[:, idx, :])
+        for idx, reducer in enumerate(self.reducers):
+            X_t = reducer.transform(X[:, idx, :])
             transformed.append(X_t[:, : self.min_components_])
         return np.stack(transformed, axis=1)
 
@@ -218,11 +336,11 @@ def dtw_distance(
     """Compute DTW distance with several optional backends."""
 
     if backend == "python":
-        return _python_dtw(s1, s2, window)
+        return float(_python_dtw(s1, s2, window))
     if backend == "numba":
         if window is None:
             window = max(len(s1), len(s2))
-        return _numba_dtw(s1, s2, window)
+        return float(_numba_dtw(s1, s2, window))
     if backend == "fastdtw":
         if fastdtw is None:
             raise RuntimeError("fastdtw backend requested but fastdtw is missing")
@@ -260,20 +378,21 @@ def pairwise_dtw_matrix(
                 distances[i, j] = dtw_distance(
                     X_test[i], X_train[j], window=window_size, backend=backend
                 )
-    return distances
+    return cast(FloatArray, distances)
 
 
-def _euclidean_numpy(block_a: np.ndarray, block_b: np.ndarray) -> np.ndarray:
+def _euclidean_numpy(block_a: np.ndarray, block_b: np.ndarray) -> FloatArray:
     a_sq = np.sum(block_a**2, axis=1, keepdims=True)
     b_sq = np.sum(block_b**2, axis=1, keepdims=True).T
-    return np.sqrt(np.maximum(a_sq + b_sq - 2.0 * block_a @ block_b.T, 0.0))
+    distances = np.sqrt(np.maximum(a_sq + b_sq - 2.0 * block_a @ block_b.T, 0.0))
+    return cast(FloatArray, distances)
 
 
 def _euclidean_torch(
     block_a: np.ndarray,
     block_b: np.ndarray,
     use_gpu: bool,
-) -> np.ndarray:
+) -> FloatArray:
     if torch is None:
         raise RuntimeError("PyTorch is required for the torch euclidean backend")
     device = torch.device("cuda" if use_gpu and torch.cuda.is_available() else "cpu")
@@ -281,7 +400,7 @@ def _euclidean_torch(
         tensor_a = torch.from_numpy(block_a).to(device=device, dtype=torch.float32)
         tensor_b = torch.from_numpy(block_b).to(device=device, dtype=torch.float32)
         dist = torch.cdist(tensor_a, tensor_b)
-        return dist.cpu().numpy()
+        return cast(FloatArray, dist.cpu().numpy())
 
 
 def pairwise_euclidean_matrix(
@@ -289,7 +408,7 @@ def pairwise_euclidean_matrix(
     X_train: np.ndarray,
     backend: str = "numpy",
     use_gpu: bool = False,
-) -> np.ndarray:
+) -> FloatArray:
     """Compute pairwise Euclidean distances with selectable backend."""
 
     X_test_flat = X_test.reshape(X_test.shape[0], -1)
@@ -307,18 +426,21 @@ def batched_lower_triangular_euclidean(
     backend: str = "numpy",
     use_gpu: bool = False,
     memmap_path: Path | None = None,
-) -> np.ndarray:
+) -> FloatArray:
     """Compute a full pairwise distance matrix using lower-triangular batching."""
 
     flattened = X.reshape(X.shape[0], -1)
     n_samples = flattened.shape[0]
     if memmap_path is not None:
         memmap_path.parent.mkdir(parents=True, exist_ok=True)
-        matrix = np.memmap(
-            memmap_path, mode="w+", dtype=np.float32, shape=(n_samples, n_samples)
+        matrix = cast(
+            FloatArray,
+            np.memmap(
+                memmap_path, mode="w+", dtype=np.float32, shape=(n_samples, n_samples)
+            ),
         )
     else:
-        matrix = np.zeros((n_samples, n_samples), dtype=np.float32)
+        matrix = cast(FloatArray, np.zeros((n_samples, n_samples), dtype=np.float32))
 
     for start in range(0, n_samples, batch_size):
         end = min(start + batch_size, n_samples)
@@ -444,40 +566,83 @@ class TimeSeriesPreprocessor:
     def __init__(self, config: PipelineConfig) -> None:
         self.config = config
         self.scaler: StandardScaler | None = None
-        self.pca: PCATimeCompressor | None = None
+        self.reducer: PCATimeCompressor | None = None
+        self.stat_extractor: StatisticalFeatureExtractor | None = None
+        self.temporal_extractor: TemporalFeatureExtractor | None = None
+        self._uses_feature_extraction: bool = False
 
     def fit(self, X: np.ndarray) -> TimeSeriesPreprocessor:
-        X_processed = X.copy()
-        if self.config.standardize:
-            self.scaler = StandardScaler()
-            n_samples, _, n_features = X_processed.shape
-            X_flat = X_processed.reshape(-1, n_features)
-            X_flat = self.scaler.fit_transform(X_flat)
-            X_processed = X_flat.reshape(n_samples, -1, n_features)
+        feature_blocks: list[np.ndarray] = []
+        if self.config.feature_extraction in {"statistical", "both"}:
+            self.stat_extractor = StatisticalFeatureExtractor()
+            feature_blocks.append(self.stat_extractor.fit_transform(X))
+        if self.config.feature_extraction in {"temporal", "both"}:
+            self.temporal_extractor = TemporalFeatureExtractor()
+            feature_blocks.append(self.temporal_extractor.fit_transform(X))
+
+        if feature_blocks:
+            self._uses_feature_extraction = True
+            X_processed = np.concatenate(feature_blocks, axis=1)
+            if self.config.standardize:
+                self.scaler = StandardScaler()
+                X_processed = self.scaler.fit_transform(X_processed)
+            else:
+                self.scaler = None
+            X_processed = X_processed[:, np.newaxis, :]
+        else:
+            self._uses_feature_extraction = False
+            X_processed = X.copy()
+            if self.config.standardize:
+                self.scaler = StandardScaler()
+                n_samples, _, n_features = X_processed.shape
+                X_flat = X_processed.reshape(-1, n_features)
+                X_flat = self.scaler.fit_transform(X_flat)
+                X_processed = X_flat.reshape(n_samples, -1, n_features)
+            else:
+                self.scaler = None
+
         if self.config.use_pca:
-            self.pca = PCATimeCompressor(
+            self.reducer = PCATimeCompressor(
                 n_components=self.config.n_components,
                 variance_threshold=self.config.pca_variance_threshold,
+                method=self.config.dim_reduction_method,
+                isomap_neighbors=self.config.isomap_neighbors,
             )
-            self.pca.fit(X_processed)
-            if self.config.verbose >= 1:
-                if self.pca.explained_variance_ratio_ is not None:
-                    retained = float(np.mean(self.pca.explained_variance_ratio_))
+            self.reducer.fit(X_processed)
+            if self.config.verbose >= 1 and self.config.dim_reduction_method == "pca":
+                if self.reducer.explained_variance_ratio_ is not None:
+                    retained = float(np.nanmean(self.reducer.explained_variance_ratio_))
                 else:
                     retained = 0.0
                 print(f"PCA retained {retained:.1%} variance on average")
+        else:
+            self.reducer = None
         return self
 
     def transform(self, X: np.ndarray) -> np.ndarray:
-        X_processed = X.copy()
-        if self.scaler is not None:
-            n_samples, _, n_features = X_processed.shape
-            X_flat = X_processed.reshape(-1, n_features)
-            X_flat = self.scaler.transform(X_flat)
-            X_processed = X_flat.reshape(n_samples, -1, n_features)
-        if self.pca is not None:
-            X_processed = self.pca.transform(X_processed)
-        return X_processed
+        if self._uses_feature_extraction:
+            feature_blocks: list[np.ndarray] = []
+            if self.stat_extractor is not None:
+                feature_blocks.append(self.stat_extractor.transform(X))
+            if self.temporal_extractor is not None:
+                feature_blocks.append(self.temporal_extractor.transform(X))
+            if feature_blocks:
+                X_processed = np.concatenate(feature_blocks, axis=1)
+            else:
+                X_processed = np.empty((len(X), 0))
+            if self.scaler is not None and X_processed.size > 0:
+                X_processed = self.scaler.transform(X_processed)
+            X_processed = X_processed[:, np.newaxis, :]
+        else:
+            X_processed = X.copy()
+            if self.scaler is not None:
+                n_samples, _, n_features = X_processed.shape
+                X_flat = X_processed.reshape(-1, n_features)
+                X_flat = self.scaler.transform(X_flat)
+                X_processed = X_flat.reshape(n_samples, -1, n_features)
+        if self.reducer is not None:
+            X_processed = self.reducer.transform(X_processed)
+        return cast(np.ndarray, X_processed)
 
     def fit_transform(self, X: np.ndarray) -> np.ndarray:
         return self.fit(X).transform(X)
@@ -492,7 +657,7 @@ def pairwise_distance_matrix(
     X_test: np.ndarray,
     X_train: np.ndarray,
     config: PipelineConfig,
-) -> tuple[np.ndarray, np.ndarray | None]:
+) -> tuple[FloatArray, np.ndarray | None]:
     """Compute the distance matrix respecting configuration options."""
 
     if config.distance_metric == "euclidean":
@@ -505,7 +670,7 @@ def pairwise_distance_matrix(
                 n_trees=config.ann_n_trees,
                 search_k=config.ann_search_k,
             )
-            return distances, indices
+            return cast(FloatArray, distances), indices
         distances = pairwise_euclidean_matrix(
             X_test, X_train, backend=config.euclidean_backend, use_gpu=config.use_gpu
         )

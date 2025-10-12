@@ -11,6 +11,8 @@ DistanceMetric = Literal["euclidean", "dtw"]
 DTWBackend = Literal["python", "numba", "fastdtw", "dtaidistance"]
 EuclideanBackend = Literal["numpy", "torch"]
 AnnBackend = Literal["annoy", "faiss"]
+FeatureExtraction = Literal["none", "statistical", "temporal", "both"]
+DimensionalityReduction = Literal["pca", "nmf", "ica", "isomap", "factor"]
 
 
 @dataclass(slots=True)
@@ -22,6 +24,8 @@ class PipelineConfig:
     use_pca: bool = True
     n_components: int | None = None
     pca_variance_threshold: float = 0.95
+    dim_reduction_method: DimensionalityReduction = "pca"
+    isomap_neighbors: int = 5
     k: int = 10
     distance_metric: DistanceMetric = "euclidean"
     distance_weighting: bool = True
@@ -45,3 +49,4 @@ class PipelineConfig:
     record_manifest: bool = True
     manifest_path: Path | None = None
     metadata: dict = field(default_factory=dict)
+    feature_extraction: FeatureExtraction = "none"
